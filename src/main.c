@@ -75,17 +75,22 @@ int main() {
             continue;
         }
         //  send HTTP status line to client
-        // else send 404
         char page_buffer[200];
         get_page(client_req_buffer, page_buffer);
+        // if valid send 200
         if (strcmp(page_buffer, "/") == 0) {
-            if (send_success(client_fd)) {
-                break;
+            char response_buffer[512] =
+                "This is what a successful response looks like";
+            if (send_http_response(client_fd, 200, NULL, response_buffer,
+                                   strlen(response_buffer))) {
+                close(client_fd);
+                continue;
             }
         } else {
-            // if valid send 200
-            if (send_failure(client_fd)) {
-                break;
+            // else send 404
+            if (send_http_response(client_fd, 404, NULL, NULL, 0)) {
+                close(client_fd);
+                continue;
             }
         }
         close(client_fd);

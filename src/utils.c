@@ -29,24 +29,46 @@ void get_page(const char *req, char *buffer) {
     strcpy(buffer, "Invalid req");
 }
 
-int send_success(int sock_fd) {
-    printf("sending 200\n");
-    char *status_buffer;
-    status_buffer = STATUS_200;
-    if (send(sock_fd, status_buffer, strlen(status_buffer), 0) == -1) {
-        perror("Status send failed\n");
-        return 1;
+static const char *get_status(unsigned short status) {
+    switch (status) {
+    case 200:
+        return "OK";
+    case 201:
+        return "Created";
+    case 404:
+        return "Not Found";
+    default:
+        return "Unknown";
     }
-    return 0;
 }
 
-int send_failure(int sock_fd) {
-    printf("sending 404, page not found\n");
-    char *status_buffer;
-    status_buffer = STATUS_404;
-    if (send(sock_fd, status_buffer, strlen(status_buffer), 0) == -1) {
-        perror("Status send failed\n");
+int send_http_response(int sock_fd, unsigned short status,
+                       const char *content_type, const char *response_body,
+                       size_t response_len) {
+    printf("Sending %hu\n", status);
+    const char *status_text = get_status(status);
+    char header_buffer[512];
+    int header_len;
+    if (response_body != NULL && response_len > 0) {
+        header_len =
+            snprintf(header_buffer, sizeof(header_buffer),
+                     "HTTP/1.1 %hu %s\r\nContent-Type: "
+                     "%s\r\nContent-Length: %zu\r\n\r\n",
+                     status, status_text,
+                     content_type ? content_type : "text/plain", response_len);
+    } else {
+        header_len = snprintf(header_buffer, sizeof(header_buffer),
+                              "HTTP/1.1 %hu %s\r\n\r\n", status, status_text);
+    }
+    if (send(sock_fd, header_buffer, header_len, 0) == -1) {
+        perror("Header send failed\n");
         return 1;
+    }
+    if (response_body != NULL && response_len > 0) {
+        if (send(sock_fd, response_body, response_len, 0) == -1) {
+            perror("Response body send failed\n");
+            return 1;
+        }
     }
     return 0;
 }

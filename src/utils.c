@@ -89,14 +89,49 @@ int handle_not_found(int client_fd) {
                               strlen(response_buffer));
 }
 
+int get_header_value(const char *raw_req, const char *header_name,
+                     char *header_value, int *header_size) {
+    char header_prefix[128];
+    int prefix_len =
+        snprintf(header_prefix, sizeof(header_prefix), "%s: ", header_name);
+
+    char *header = strstr(raw_req, header_prefix);
+    if (header == NULL)
+        return 1;
+
+    header += prefix_len;
+    int header_len = strcspn(header, "\r\n");
+    if (header_len >= *header_size) {
+        header_len = *header_size - 1;
+    }
+
+    strncpy(header_value, header, header_len);
+    header_value[header_len] = '\0';
+    *header_size = header_len;
+    return 0;
+}
+
+int handle_user_agent(int client_fd, const HttpRequest *request) {
+    char user_agent[512];
+    int header_len = sizeof(user_agent);
+    if (get_header_value(request->raw, "User-Agent", user_agent, &header_len) ==
+        0)
+        return send_http_response(client_fd, 200, NULL, user_agent, header_len);
+
+    strcpy(user_agent, "User-Agent Not Found");
+    header_len = strlen(user_agent);
+    return send_http_response(client_fd, 404, NULL, user_agent, header_len);
+}
+
 int route_request(int client_fd, const HttpRequest *request) {
     // if valid send 200
     if (strcmp(request->method, "GET") == 0) {
         if (strcmp(request->path, "/") == 0)
             return handle_homepage(client_fd);
-        else if (strncmp(request->path, "/echo/", 6) == 0) {
+        else if (strncmp(request->path, "/echo/", 6) == 0)
             return handle_echo(client_fd, request->path + 6);
-        }
+        else if (strcmp(request->path, "/user-agent") == 0)
+            return handle_user_agent(client_fd, request);
     }
     return handle_not_found(client_fd);
 }

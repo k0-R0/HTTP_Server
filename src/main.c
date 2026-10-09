@@ -56,7 +56,6 @@ int main() {
         return 1;
     }
     while (1) {
-
         printf("Waiting for client to connect...\n");
         // accept incoming connections
         client_fd =
@@ -74,24 +73,15 @@ int main() {
             close(client_fd);
             continue;
         }
+        HttpRequest request;
+        if (parse_http_request(client_req_buffer, &request)) {
+            close(client_fd);
+            continue;
+        }
         //  send HTTP status line to client
-        char page_buffer[200];
-        get_page(client_req_buffer, page_buffer);
-        // if valid send 200
-        if (strcmp(page_buffer, "/") == 0) {
-            char response_buffer[512] =
-                "This is what a successful response looks like";
-            if (send_http_response(client_fd, 200, NULL, response_buffer,
-                                   strlen(response_buffer))) {
-                close(client_fd);
-                continue;
-            }
-        } else {
-            // else send 404
-            if (send_http_response(client_fd, 404, NULL, NULL, 0)) {
-                close(client_fd);
-                continue;
-            }
+        if (route_request(client_fd, &request)) {
+            close(client_fd);
+            continue;
         }
         close(client_fd);
     }

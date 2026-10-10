@@ -13,8 +13,21 @@
 
 #define PORT 4221
 #define SERVER_ADDRESS "127.0.0.1"
+char *server_dir;
 
-int main() {
+int main(int argc, char *argv[]) {
+    // store server directory
+    if (argc > 1) {
+        if (argc != 3) {
+            printf("Invalid number of arguments\n");
+            return 1;
+        }
+        if (strcmp(argv[1], "--directory")) {
+            printf("Invalid argument\n");
+            return 1;
+        }
+        server_dir = argv[2];
+    }
     // create a TCP socket for the server
     int server_fd, client_fd;
     server_fd = socket(AF_INET, SOCK_STREAM, 0);

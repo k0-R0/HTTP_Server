@@ -1,9 +1,13 @@
 #include "status_messages.h"
 #include "utils.h"
+#include <fcntl.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
 #include <unistd.h>
+
+extern char *server_dir;
 
 int get_client_request(int sock_fd, char *buffer, size_t buffer_len) {
     int bytes_received = recv(sock_fd, buffer, buffer_len - 1, 0);
@@ -46,12 +50,12 @@ int send_http_response(int sock_fd, unsigned short status,
     char header_buffer[512];
     int header_len;
     if (response_body != NULL && response_len > 0) {
-        header_len =
-            snprintf(header_buffer, sizeof(header_buffer),
-                     "HTTP/1.1 %hu %s\r\nContent-Type: "
-                     "%s\r\nContent-Length: %zu\r\n\r\n",
-                     status, status_text,
-                     content_type ? content_type : "text/plain", response_len);
+        header_len = snprintf(
+            header_buffer, sizeof(header_buffer),
+            "HTTP/1.1 %hu %s\r\nContent-Type: "
+            "%s\r\nContent-Length: %zu\r\nContent-Disposition: inline\r\n\r\n",
+            status, status_text, content_type ? content_type : "text/plain",
+            response_len);
     } else {
         header_len = snprintf(header_buffer, sizeof(header_buffer),
                               "HTTP/1.1 %hu %s\r\n\r\n", status, status_text);
@@ -67,6 +71,43 @@ int send_http_response(int sock_fd, unsigned short status,
         }
     }
     return 0;
+}
+
+int send_http_file(int client_fd, int file_fd, const char *file_name) {
+    // read file size
+    size_t file_size = lseek(file_fd, 0, SEEK_END);
+    lseek(file_fd, 0, SEEK_SET);
+    // read the entire file into a buffer
+    char *file_buffer = malloc(file_size);
+    if (read(file_fd, file_buffer, file_size) == -1) {
+        perror("Failed to read file");
+        close(file_fd);
+        return 1;
+    }
+    close(file_fd);
+    // Determine MIME type based on file extension
+    const char *file_type = "application/octet-stream";
+    const char *ext = strrchr(file_name, '.');
+    if (ext != NULL) {
+        if (strcmp(ext, ".txt") == 0) {
+            file_type = "text/plain";
+        } else if (strcmp(ext, ".html") == 0 || strcmp(ext, ".htm") == 0) {
+            file_type = "text/html";
+        } else if (strcmp(ext, ".png") == 0) {
+            file_type = "image/png";
+        } else if (strcmp(ext, ".jpg") == 0 || strcmp(ext, ".jpeg") == 0) {
+            file_type = "image/jpeg";
+        } else if (strcmp(ext, ".gif") == 0) {
+            file_type = "image/gif";
+        } else if (strcmp(ext, ".svg") == 0) {
+            file_type = "image/svg+xml";
+        }
+    }
+
+    int res =
+        send_http_response(client_fd, 200, file_type, file_buffer, file_size);
+    free(file_buffer);
+    return res;
 }
 
 int handle_homepage(int client_fd) {
@@ -123,6 +164,22 @@ int handle_user_agent(int client_fd, const HttpRequest *request) {
     return send_http_response(client_fd, 404, NULL, user_agent, header_len);
 }
 
+int handle_get_file(int client_fd, const HttpRequest *request) {
+    // open file
+    char file_path[512];
+    char file_name[256];
+    if (sscanf(request->path, "/files/%s", file_name) < 1)
+        return 1;
+    snprintf(file_path, sizeof(file_path), "%s/%s", server_dir, file_name);
+    int file_fd = open(file_path, O_RDONLY);
+    // if file doesn't exist return error
+    if (file_fd == -1) {
+        return send_http_response(client_fd, 404, NULL, NULL, 0);
+    }
+    // if file exists transfer file to the client
+    return send_http_file(client_fd, file_fd, file_name);
+}
+
 int route_request(int client_fd, const HttpRequest *request) {
     // if valid send 200
     if (strcmp(request->method, "GET") == 0) {
@@ -132,6 +189,8 @@ int route_request(int client_fd, const HttpRequest *request) {
             return handle_echo(client_fd, request->path + 6);
         else if (strcmp(request->path, "/user-agent") == 0)
             return handle_user_agent(client_fd, request);
+        else if (strncmp(request->path, "/files/", 7) == 0)
+            return handle_get_file(client_fd, request);
     }
     return handle_not_found(client_fd);
 }

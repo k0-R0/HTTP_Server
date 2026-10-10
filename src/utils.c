@@ -42,6 +42,28 @@ static const char *get_status(unsigned short status) {
     }
 }
 
+int get_header_value(const char *raw_req, const char *header_name,
+                     char *header_value, int *header_size) {
+    char header_prefix[128];
+    int prefix_len =
+        snprintf(header_prefix, sizeof(header_prefix), "%s: ", header_name);
+
+    char *header = strstr(raw_req, header_prefix);
+    if (header == NULL)
+        return 1;
+
+    header += prefix_len;
+    int header_len = strcspn(header, "\r\n");
+    if (header_len >= *header_size) {
+        header_len = *header_size - 1;
+    }
+
+    strncpy(header_value, header, header_len);
+    header_value[header_len] = '\0';
+    *header_size = header_len;
+    return 0;
+}
+
 int send_http_response(int sock_fd, unsigned short status,
                        const char *content_type, const char *response_body,
                        size_t response_len) {
@@ -109,6 +131,32 @@ int send_http_file(int client_fd, int file_fd, const char *file_name) {
     free(file_buffer);
     return res;
 }
+int recv_http_file(int client_fd, int file_fd, const HttpRequest *request) {
+    // get file size
+    size_t file_size;
+    char buffer[32];
+    int header_size = sizeof(buffer);
+    if (get_header_value(request->raw, "Content-Length", buffer,
+                         &header_size)) {
+        close(file_fd);
+        return send_http_response(client_fd, 404, NULL, NULL, 0);
+    }
+    sscanf(buffer, "%zu", &file_size);
+    // read that many bites into fd
+    char *file_contents = strstr(request->raw, "\r\n\r\n");
+    if (file_contents == NULL) {
+        close(file_fd);
+        return 1;
+    }
+    file_contents += 4;
+    if (write(file_fd, file_contents, file_size) == -1) {
+        perror("Failed to create file");
+        close(file_fd);
+        return 1;
+    }
+    close(file_fd);
+    return send_http_response(client_fd, 201, NULL, NULL, 0);
+}
 
 int handle_homepage(int client_fd) {
     char response_buffer[512] = "This is the homepage";
@@ -128,28 +176,6 @@ int handle_not_found(int client_fd) {
     char response_buffer[128] = "Page Not Found";
     return send_http_response(client_fd, 404, NULL, response_buffer,
                               strlen(response_buffer));
-}
-
-int get_header_value(const char *raw_req, const char *header_name,
-                     char *header_value, int *header_size) {
-    char header_prefix[128];
-    int prefix_len =
-        snprintf(header_prefix, sizeof(header_prefix), "%s: ", header_name);
-
-    char *header = strstr(raw_req, header_prefix);
-    if (header == NULL)
-        return 1;
-
-    header += prefix_len;
-    int header_len = strcspn(header, "\r\n");
-    if (header_len >= *header_size) {
-        header_len = *header_size - 1;
-    }
-
-    strncpy(header_value, header, header_len);
-    header_value[header_len] = '\0';
-    *header_size = header_len;
-    return 0;
 }
 
 int handle_user_agent(int client_fd, const HttpRequest *request) {
@@ -180,6 +206,20 @@ int handle_get_file(int client_fd, const HttpRequest *request) {
     return send_http_file(client_fd, file_fd, file_name);
 }
 
+int handle_post_file(int client_fd, const HttpRequest *request) {
+    // open file
+    char file_path[512];
+    char file_name[256];
+    if (sscanf(request->path, "/files/%s", file_name) < 1)
+        return 1;
+    snprintf(file_path, sizeof(file_path), "%s/%s", server_dir, file_name);
+    int file_fd = open(file_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (file_fd == -1) {
+        return send_http_response(client_fd, 404, NULL, NULL, 0);
+    }
+    return recv_http_file(client_fd, file_fd, request);
+}
+
 int route_request(int client_fd, const HttpRequest *request) {
     // if valid send 200
     if (strcmp(request->method, "GET") == 0) {
@@ -191,6 +231,8 @@ int route_request(int client_fd, const HttpRequest *request) {
             return handle_user_agent(client_fd, request);
         else if (strncmp(request->path, "/files/", 7) == 0)
             return handle_get_file(client_fd, request);
-    }
+    } else if (strcmp(request->method, "POST") == 0 &&
+               strncmp(request->path, "/files/", 7) == 0)
+        return handle_post_file(client_fd, request);
     return handle_not_found(client_fd);
 }

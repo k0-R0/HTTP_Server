@@ -1,9 +1,13 @@
 #include "status_messages.h"
 #include "utils.h"
+#include <fcntl.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
 #include <unistd.h>
+
+extern char *server_dir;
 
 int get_client_request(int sock_fd, char *buffer, size_t buffer_len) {
     int bytes_received = recv(sock_fd, buffer, buffer_len - 1, 0);
@@ -38,57 +42,6 @@ static const char *get_status(unsigned short status) {
     }
 }
 
-int send_http_response(int sock_fd, unsigned short status,
-                       const char *content_type, const char *response_body,
-                       size_t response_len) {
-    printf("Sending %hu\n", status);
-    const char *status_text = get_status(status);
-    char header_buffer[512];
-    int header_len;
-    if (response_body != NULL && response_len > 0) {
-        header_len =
-            snprintf(header_buffer, sizeof(header_buffer),
-                     "HTTP/1.1 %hu %s\r\nContent-Type: "
-                     "%s\r\nContent-Length: %zu\r\n\r\n",
-                     status, status_text,
-                     content_type ? content_type : "text/plain", response_len);
-    } else {
-        header_len = snprintf(header_buffer, sizeof(header_buffer),
-                              "HTTP/1.1 %hu %s\r\n\r\n", status, status_text);
-    }
-    if (send(sock_fd, header_buffer, header_len, 0) == -1) {
-        perror("Header send failed\n");
-        return 1;
-    }
-    if (response_body != NULL && response_len > 0) {
-        if (send(sock_fd, response_body, response_len, 0) == -1) {
-            perror("Response body send failed\n");
-            return 1;
-        }
-    }
-    return 0;
-}
-
-int handle_homepage(int client_fd) {
-    char response_buffer[512] = "This is the homepage";
-    if (send_http_response(client_fd, 200, NULL, response_buffer,
-                           strlen(response_buffer))) {
-        return 1;
-    }
-    return 0;
-}
-
-int handle_echo(int client_fd, const char *str) {
-    return send_http_response(client_fd, 200, NULL, str, strlen(str));
-}
-
-int handle_not_found(int client_fd) {
-    // else send 404
-    char response_buffer[128] = "Page Not Found";
-    return send_http_response(client_fd, 404, NULL, response_buffer,
-                              strlen(response_buffer));
-}
-
 int get_header_value(const char *raw_req, const char *header_name,
                      char *header_value, int *header_size) {
     char header_prefix[128];
@@ -111,6 +64,120 @@ int get_header_value(const char *raw_req, const char *header_name,
     return 0;
 }
 
+int send_http_response(int sock_fd, unsigned short status,
+                       const char *content_type, const char *response_body,
+                       size_t response_len) {
+    printf("Sending %hu\n", status);
+    const char *status_text = get_status(status);
+    char header_buffer[512];
+    int header_len;
+    if (response_body != NULL && response_len > 0) {
+        header_len = snprintf(
+            header_buffer, sizeof(header_buffer),
+            "HTTP/1.1 %hu %s\r\nContent-Type: "
+            "%s\r\nContent-Length: %zu\r\nContent-Disposition: inline\r\n\r\n",
+            status, status_text, content_type ? content_type : "text/plain",
+            response_len);
+    } else {
+        header_len = snprintf(header_buffer, sizeof(header_buffer),
+                              "HTTP/1.1 %hu %s\r\n\r\n", status, status_text);
+    }
+    if (send(sock_fd, header_buffer, header_len, 0) == -1) {
+        perror("Header send failed\n");
+        return 1;
+    }
+    if (response_body != NULL && response_len > 0) {
+        if (send(sock_fd, response_body, response_len, 0) == -1) {
+            perror("Response body send failed\n");
+            return 1;
+        }
+    }
+    return 0;
+}
+
+int send_http_file(int client_fd, int file_fd, const char *file_name) {
+    // read file size
+    size_t file_size = lseek(file_fd, 0, SEEK_END);
+    lseek(file_fd, 0, SEEK_SET);
+    // read the entire file into a buffer
+    char *file_buffer = malloc(file_size);
+    if (read(file_fd, file_buffer, file_size) == -1) {
+        perror("Failed to read file");
+        close(file_fd);
+        return 1;
+    }
+    close(file_fd);
+    // Determine MIME type based on file extension
+    const char *file_type = "application/octet-stream";
+    const char *ext = strrchr(file_name, '.');
+    if (ext != NULL) {
+        if (strcmp(ext, ".txt") == 0) {
+            file_type = "text/plain";
+        } else if (strcmp(ext, ".html") == 0 || strcmp(ext, ".htm") == 0) {
+            file_type = "text/html";
+        } else if (strcmp(ext, ".png") == 0) {
+            file_type = "image/png";
+        } else if (strcmp(ext, ".jpg") == 0 || strcmp(ext, ".jpeg") == 0) {
+            file_type = "image/jpeg";
+        } else if (strcmp(ext, ".gif") == 0) {
+            file_type = "image/gif";
+        } else if (strcmp(ext, ".svg") == 0) {
+            file_type = "image/svg+xml";
+        }
+    }
+
+    int res =
+        send_http_response(client_fd, 200, file_type, file_buffer, file_size);
+    free(file_buffer);
+    return res;
+}
+int recv_http_file(int client_fd, int file_fd, const HttpRequest *request) {
+    // get file size
+    size_t file_size;
+    char buffer[32];
+    int header_size = sizeof(buffer);
+    if (get_header_value(request->raw, "Content-Length", buffer,
+                         &header_size)) {
+        close(file_fd);
+        return send_http_response(client_fd, 404, NULL, NULL, 0);
+    }
+    sscanf(buffer, "%zu", &file_size);
+    // read that many bites into fd
+    char *file_contents = strstr(request->raw, "\r\n\r\n");
+    if (file_contents == NULL) {
+        close(file_fd);
+        return 1;
+    }
+    file_contents += 4;
+    if (write(file_fd, file_contents, file_size) == -1) {
+        perror("Failed to create file");
+        close(file_fd);
+        return 1;
+    }
+    close(file_fd);
+    return send_http_response(client_fd, 201, NULL, NULL, 0);
+}
+
+int handle_homepage(int client_fd) {
+    char response_buffer[512] = "This is the homepage";
+    if (send_http_response(client_fd, 200, NULL, response_buffer,
+                           strlen(response_buffer))) {
+        return 1;
+    }
+    return 0;
+}
+
+int handle_echo(int client_fd, const char *str) {
+    return send_http_response(client_fd, 200, NULL, str, strlen(str));
+}
+
+int handle_not_found(int client_fd) {
+    // else send 404
+    char response_buffer[128] = "Page Not Found";
+    return send_http_response(client_fd, 404, NULL, response_buffer,
+                              strlen(response_buffer));
+}
+
 int handle_user_agent(int client_fd, const HttpRequest *request) {
     char user_agent[512];
     int header_len = sizeof(user_agent);
@@ -123,6 +190,36 @@ int handle_user_agent(int client_fd, const HttpRequest *request) {
     return send_http_response(client_fd, 404, NULL, user_agent, header_len);
 }
 
+int handle_get_file(int client_fd, const HttpRequest *request) {
+    // open file
+    char file_path[512];
+    char file_name[256];
+    if (sscanf(request->path, "/files/%s", file_name) < 1)
+        return 1;
+    snprintf(file_path, sizeof(file_path), "%s/%s", server_dir, file_name);
+    int file_fd = open(file_path, O_RDONLY);
+    // if file doesn't exist return error
+    if (file_fd == -1) {
+        return send_http_response(client_fd, 404, NULL, NULL, 0);
+    }
+    // if file exists transfer file to the client
+    return send_http_file(client_fd, file_fd, file_name);
+}
+
+int handle_post_file(int client_fd, const HttpRequest *request) {
+    // open file
+    char file_path[512];
+    char file_name[256];
+    if (sscanf(request->path, "/files/%s", file_name) < 1)
+        return 1;
+    snprintf(file_path, sizeof(file_path), "%s/%s", server_dir, file_name);
+    int file_fd = open(file_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (file_fd == -1) {
+        return send_http_response(client_fd, 404, NULL, NULL, 0);
+    }
+    return recv_http_file(client_fd, file_fd, request);
+}
+
 int route_request(int client_fd, const HttpRequest *request) {
     // if valid send 200
     if (strcmp(request->method, "GET") == 0) {
@@ -132,6 +229,10 @@ int route_request(int client_fd, const HttpRequest *request) {
             return handle_echo(client_fd, request->path + 6);
         else if (strcmp(request->path, "/user-agent") == 0)
             return handle_user_agent(client_fd, request);
-    }
+        else if (strncmp(request->path, "/files/", 7) == 0)
+            return handle_get_file(client_fd, request);
+    } else if (strcmp(request->method, "POST") == 0 &&
+               strncmp(request->path, "/files/", 7) == 0)
+        return handle_post_file(client_fd, request);
     return handle_not_found(client_fd);
 }

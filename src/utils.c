@@ -1,4 +1,3 @@
-#include "status_messages.h"
 #include "utils.h"
 #include <fcntl.h>
 #include <stdio.h>
@@ -235,4 +234,22 @@ int route_request(int client_fd, const HttpRequest *request) {
                strncmp(request->path, "/files/", 7) == 0)
         return handle_post_file(client_fd, request);
     return handle_not_found(client_fd);
+}
+
+int handle_client(int client_fd) {
+    // read client request URL
+    char client_req_buffer[2048];
+    if (get_client_request(client_fd, client_req_buffer,
+                           sizeof(client_req_buffer))) {
+        return 1;
+    }
+    HttpRequest request;
+    if (parse_http_request(client_req_buffer, &request)) {
+        return 1;
+    }
+    //  send HTTP status line to client
+    if (route_request(client_fd, &request)) {
+        return 1;
+    }
+    return 0;
 }

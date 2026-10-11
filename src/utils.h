@@ -18,4 +18,6 @@ int send_http_response(int sock_fd, unsigned short status,
 int route_request(int client_fd, const HttpRequest *request);
 
 int parse_http_request(const char *buffer, HttpRequest *request);
+int handle_client(int client_fd);
+
 #endif

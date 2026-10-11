@@ -1,5 +1,5 @@
-#include "status_messages.h"
 #include "utils.h"
+#include "workers.h"
 #include <arpa/inet.h>
 #include <asm-generic/socket.h>
 #include <errno.h>
@@ -63,11 +63,13 @@ int main(int argc, char *argv[]) {
     }
     // listen incoming connections
     // keep a queue of 5 connections
-    int connection_backlog = 5;
+    int connection_backlog = 128;
     if (listen(server_fd, connection_backlog) == -1) {
         perror("Failed to connect\n");
         return 1;
     }
+    // initialize workers
+    init_workers(8);
     while (1) {
         printf("Waiting for client to connect...\n");
         // accept incoming connections
@@ -79,24 +81,7 @@ int main(int argc, char *argv[]) {
         }
         printf("client connected\nIP -> %s\nPort -> %hu\n",
                inet_ntoa(client_addr.sin_addr), ntohs(client_addr.sin_port));
-        // read client request URL
-        char client_req_buffer[2048];
-        if (get_client_request(client_fd, client_req_buffer,
-                               sizeof(client_req_buffer))) {
-            close(client_fd);
-            continue;
-        }
-        HttpRequest request;
-        if (parse_http_request(client_req_buffer, &request)) {
-            close(client_fd);
-            continue;
-        }
-        //  send HTTP status line to client
-        if (route_request(client_fd, &request)) {
-            close(client_fd);
-            continue;
-        }
-        close(client_fd);
+        dispatch_client(client_fd);
     }
     close(server_fd);
 }
